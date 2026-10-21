@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Blip, Meta, Status } from '../types'
 
@@ -318,6 +318,60 @@ function hudSvg(list: Blip[], m: Meta, now: number): string {
   return out.join('')
 }
 
+// The standalone viewer: a page in ~/.claude/doom-interface that loads
+// feed.js every second, so the Desktop launcher can show the HUD in a window
+// of its own, fed by whichever session on this computer is working.
+type Feed = {
+  v: number
+  at: number
+  isBusy: boolean
+  svg: string
+  log: { time: string; glyph: string; tool: string; target: string; dur: string; color: string; isErr: boolean; isRun: boolean }[]
+  files: { path: string; op: 'R' | 'W' }[]
+}
+
+async function writeFeed($: EngineInterface, dir: string, v: number) {
+  const list = await read($, feed)
+  const m = await read($, meta)
+  const now = await $.clock.now()
+  const running = list.filter(b => b.status === 'run')
+  const data: Feed = {
+    v,
+    at: now,
+    isBusy: running.length > 0 || m.isThinking,
+    svg: hudSvg(list, m, now),
+    log: list.slice(-24).reverse().map(b => {
+      const isErr = b.status === 'err' || b.status === 'deny'
+      return {
+        time: clock(b.t0),
+        glyph: glyph(b.status),
+        tool: shortTool(b.tool),
+        target: (b.isAgent ? '↳ ' : '') + b.target,
+        dur: b.status === 'run' ? 'live' : dur(b, now),
+        color: isErr ? MOLTEN : catOf(b.tool).color,
+        isErr,
+        isRun: b.status === 'run',
+      }
+    }),
+    files: m.files.slice(-10).reverse(),
+  }
+  await $.fs.write(`${dir}/feed.js`, `window.__doomFeed(${JSON.stringify(data)})\n`)
+}
+
+let dir: string | undefined
+let pending: { cancel: () => void } | undefined
+let version = 0
+
+// Coalesces a burst of changes into one write of the viewer's feed.
+function publish($: EngineInterface) {
+  if (dir === undefined || pending !== undefined) return
+  const target = dir
+  pending = $.clock.after(150, () => {
+    pending = undefined
+    void writeFeed($, target, ++version).catch(() => undefined)
+  })
+}
+
 export const register: Register = on => {
   let busy = 0
   let isThinking = false
@@ -328,8 +382,18 @@ export const register: Register = on => {
     void $.ui.open({ id: PANE, title: TITLE })
     ticking?.cancel()
     ticking = $.clock.every(1000, () => {
-      if (busy > 0 || isThinking) void update($, tick, n => n + 1)
+      if (busy > 0 || isThinking) {
+        void update($, tick, n => n + 1)
+        publish($)
+      }
     })
+    const home = await $.env.get('HOME')
+    if (home !== undefined) {
+      dir = `${home}/.claude/doom-interface`
+      const page = await $.fs.read(`${$.plugin.root}/viewer/index.html`).catch(() => undefined)
+      if (typeof page === 'string') await $.fs.write(`${dir}/index.html`, page).catch(() => undefined)
+      publish($)
+    }
 
     return next(e)
   })
@@ -345,6 +409,7 @@ export const register: Register = on => {
       isThinking = true
       const now = await $.clock.now()
       await update($, meta, m => ({ ...m, isThinking: true, turnStart: now, turns: m.turns + 1 }))
+      publish($)
     }
 
     return next(e)
@@ -354,6 +419,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       isThinking = false
       await update($, meta, m => ({ ...m, isThinking: false }))
+      publish($)
     }
 
     return next(e)
@@ -381,6 +447,7 @@ export const register: Register = on => {
         ? [...m.files.filter(f => f.path !== path), { path, op: cat === 'write' ? 'W' : 'R' } as const].slice(-12)
         : m.files,
     }))
+    publish($)
 
     let status: Status = 'err'
     try {
@@ -392,6 +459,7 @@ export const register: Register = on => {
       const t1 = await $.clock.now()
       await update($, feed, list => list.map(b => (b.id === blip.id ? { ...b, status, t1 } : b)))
       if (status !== 'ok') await update($, meta, m => ({ ...m, errors: m.errors + 1 }))
+      publish($)
     }
   }).catch(($, e, next) => next(e))
 
@@ -403,7 +471,7 @@ export const register: Register = on => {
     const running = list.filter(b => b.status === 'run')
 
     const clear = () =>
-      void Promise.all([update($, feed, () => []), update($, meta, () => ({ ...EMPTY, isThinking }))])
+      void Promise.all([update($, feed, () => []), update($, meta, () => ({ ...EMPTY, isThinking }))]).then(() => publish($))
 
     if (e.surface === 'terminal') {
       const { Box, Text, Button } = $.ui.resolve(e)

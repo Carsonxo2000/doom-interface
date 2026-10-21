@@ -20,13 +20,13 @@ In the desktop app, where `/plugin` does not run: click + next to the prompt box
 
 ## Mac desktop launcher
 
-Paste this into Terminal. It installs the plugin (when Claude Code's command line is installed) and puts a **Doom Interface** app with its own icon on your Desktop that opens the Claude desktop app:
+Paste this into Terminal. It installs or updates the plugin (when Claude Code's command line is installed) and puts a **Doom Interface** app with its own icon on your Desktop:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/carsonxo2000/doom-interface/main/mac/install.sh)"
 ```
 
-The launcher is built on your Mac by `osacompile`, so macOS opens it without a security warning.
+The app opens the HUD in a window of its own (a chromeless window in Chrome, Edge or Brave when one is installed, Safari otherwise), live with whichever Claude Code session on your Mac is working. The plugin feeds it through `~/.claude/doom-interface/feed.js`, which the page reloads every second; with no session running it waits for a link. The launcher is built on your Mac by `osacompile`, so macOS opens it without a security warning.
 
 ## License
 

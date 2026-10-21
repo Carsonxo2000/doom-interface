@@ -1,6 +1,6 @@
 {
   "name": "doom-interface",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A JARVIS-style holographic HUD, in Doom green, that shows every tool call Claude Code makes as it works",
   "types": "./types/index.d.ts",
   "author": {
