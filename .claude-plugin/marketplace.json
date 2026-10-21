@@ -1,0 +1,13 @@
+{
+  "name": "doom-interface",
+  "owner": {
+    "name": "carsonxo2000"
+  },
+  "description": "D.O.O.M.: a JARVIS-style live activity HUD for Claude Code, in Doom green",
+  "plugins": [
+    {
+      "name": "doom-interface",
+      "source": "./"
+    }
+  ]
+}
