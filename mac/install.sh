@@ -27,11 +27,13 @@ else
   echo "  + next to the prompt box → Plugins → Add marketplace → $REPO → Add plugin"
 fi
 
-# The HUD page. The plugin rewrites it at each session start; this copy lets
-# the launcher open before the first session.
+# The HUD page. The plugin lays it again at each session start; this copy
+# lets the launcher open before the first session.
 mkdir -p "$VIEWER_DIR"
-curl -fsSL "$RAW/viewer/index.html" -o "$VIEWER_DIR/index.html" ||
-  echo "  Could not download the HUD page; it appears after your next Claude Code session starts."
+for file in index.html hud.js; do
+  curl -fsSL "$RAW/viewer/$file" -o "$VIEWER_DIR/$file" ||
+    echo "  Could not download viewer/$file; it appears after your next Claude Code session starts."
+done
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

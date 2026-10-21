@@ -1,0 +1,69 @@
+#!/bin/bash
+# Records one Claude Code hook event for the D.O.O.M. window, using only tools
+# macOS ships (plutil, perl, tr). Each event is one line of events.js, which
+# the window reloads every second. It never blocks Claude Code: whatever
+# happens, it prints nothing and exits 0.
+#
+# Usage: doom-event session|prompt|pre|post|fail|stop  (hook input on stdin)
+
+kind="$1"
+dir="$HOME/.claude/doom-interface"
+log="$dir/events.js"
+input="$(cat)"
+mkdir -p "$dir" 2>/dev/null || exit 0
+
+# A field of the hook input, by key path ("tool_input.command"); empty when
+# absent or not a string.
+field() { printf '%s' "$input" | plutil -extract "$1" raw -o - - 2>/dev/null; }
+
+# $1 as a JSON string literal, cut to 160 characters, one line.
+quote() {
+  local s="${1:0:160}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="$(printf '%s' "$s" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037')"
+  printf '"%s"' "$s"
+}
+
+now() { perl -MTime::HiRes=time -e 'printf "%.0f", time * 1000' 2>/dev/null || echo "$(($(date +%s) * 1000))"; }
+
+sid="$(field session_id)"
+sid="${sid:0:8}"
+[ -n "$sid" ] || exit 0
+ts="$(now)"
+
+case "$kind" in
+  session)
+    # Start a fresh log once it grows past 2 MB, and lay the window's page.
+    if [ -f "$log" ] && [ "$(wc -c <"$log")" -gt 2000000 ]; then : >"$log"; fi
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+      cp "$CLAUDE_PLUGIN_ROOT/viewer/index.html" "$CLAUDE_PLUGIN_ROOT/viewer/hud.js" "$dir/" 2>/dev/null
+    fi
+    line="[\"session\",\"$sid\",$ts]"
+    ;;
+  prompt | stop)
+    line="[\"$kind\",\"$sid\",$ts]"
+    ;;
+  pre)
+    tool="$(field tool_name)"
+    [ -n "$tool" ] || exit 0
+    target=""
+    for key in tool_input.file_path tool_input.notebook_path tool_input.command tool_input.pattern \
+      tool_input.url tool_input.query tool_input.description tool_input.skill tool_input.prompt; do
+      target="$(field "$key")"
+      [ -n "$target" ] && break
+    done
+    agent=0
+    [ -n "$(field agent_id)" ] && agent=1
+    line="[\"pre\",\"$sid\",$(quote "$(field tool_use_id)"),$(quote "$tool"),$(quote "$target"),$ts,$agent]"
+    ;;
+  post | fail)
+    line="[\"$kind\",\"$sid\",$(quote "$(field tool_use_id)"),$ts]"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+printf '__e(%s);\n' "$line" >>"$log" 2>/dev/null
+exit 0

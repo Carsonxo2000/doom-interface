@@ -26,7 +26,11 @@ Paste this into Terminal. It installs or updates the plugin (when Claude Code's 
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/carsonxo2000/doom-interface/main/mac/install.sh)"
 ```
 
-The app opens the HUD in a window of its own (a chromeless window in Chrome, Edge or Brave when one is installed, Safari otherwise), live with whichever Claude Code session on your Mac is working. The plugin feeds it through `~/.claude/doom-interface/feed.js`, which the page reloads every second; with no session running it waits for a link. The launcher is built on your Mac by `osacompile`, so macOS opens it without a security warning.
+The app opens the HUD in a window of its own (a chromeless window in Chrome, Edge or Brave when one is installed, Safari otherwise), live with whichever Claude Code session on your Mac is working. The plugin's ordinary hooks run `scripts/doom-event`, which appends each event to `~/.claude/doom-interface/events.js` using only tools macOS ships (`plutil`, `perl`); the page reloads that file every second and draws the HUD with `viewer/hud.js`. With no session running it waits for a link. Sessions that were already open pick up an update when they restart. The launcher is built on your Mac by `osacompile`, so macOS opens it without a security warning.
+
+## Development
+
+`hooks/hud.ts` draws the HUD for both the pane and the window. After changing it, run `scripts/build-viewer.sh` (needs `tsc`) to regenerate `viewer/hud.js`.
 
 ## License
 

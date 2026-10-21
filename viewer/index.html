@@ -140,68 +140,144 @@
   </div>
 </main>
 
+<script src="hud.js"></script>
 <script>
-  // feed.js, written beside this page by the doom-interface mod, calls
-  // __doomFeed with the latest HUD. Loading it as a script works from a
-  // file:// page, where fetch does not.
+  // events.js, appended to by the plugin's hooks (scripts/doom-event), holds
+  // one __e([...]) call per event. Loading it as a script works from a
+  // file:// page, where fetch does not; hud.js draws the same HUD as the pane.
   const $ = id => document.getElementById(id);
-  let last = null;
-  let shownVersion = -1;
+  const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+  const STALE_MS = 10 * 60 * 1000;
+  let events = [];
+  let incoming = [];
+  let shownCount = -1;
+  let lastAt = 0;
+  let isBusy = false;
 
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  window.__e = ev => incoming.push(ev);
+
+  const escHtml = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const ago = ms => {
     const s = Math.round(ms / 1000);
     return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`;
   };
 
-  window.__doomFeed = data => {
-    last = data;
-    if (data.v === shownVersion) return;
-    shownVersion = data.v;
+  // Replays the latest session's events into the pane's own shapes.
+  function build(now) {
+    const sid = events.length > 0 ? events[events.length - 1][1] : null;
+    const byId = new Map();
+    const list = [];
+    const m = { calls: 0, errors: 0, turns: 0, byCat: {}, files: [], isThinking: false, turnStart: undefined };
+    for (const ev of events) {
+      if (ev[1] !== sid) continue;
+      const [kind] = ev;
+      if (kind === 'prompt') {
+        m.isThinking = true;
+        m.turnStart = ev[2];
+        m.turns += 1;
+      } else if (kind === 'stop') {
+        m.isThinking = false;
+        for (const b of list) if (b.status === 'run') { b.status = 'ok'; b.t1 = ev[2]; }
+      } else if (kind === 'pre') {
+        const [, , id, tool, target, t0, agent] = ev;
+        const cat = catOf(tool).key;
+        const isFile = FILE_TOOLS.has(tool) && target.includes('/');
+        const blip = { id, tool, target: isFile ? target.split('/').slice(-2).join('/') : target, isAgent: agent === 1, status: 'run', t0 };
+        byId.set(id, blip);
+        list.push(blip);
+        m.calls += 1;
+        m.byCat[cat] = (m.byCat[cat] || 0) + 1;
+        if (isFile) {
+          m.files = [...m.files.filter(f => f.path !== target), { path: target, op: cat === 'write' ? 'W' : 'R' }].slice(-12);
+        }
+      } else if (kind === 'post' || kind === 'fail') {
+        const blip = byId.get(ev[2]);
+        if (blip) {
+          blip.status = kind === 'post' ? 'ok' : 'err';
+          blip.t1 = ev[3];
+        }
+        if (kind === 'fail') m.errors += 1;
+      }
+    }
+    // A session that died mid-turn leaves calls open; past a while, close them.
+    if (now - lastAt > STALE_MS) {
+      m.isThinking = false;
+      for (const b of list) if (b.status === 'run') { b.status = 'err'; b.t1 = lastAt; }
+    }
+    return { list: list.slice(-80), m };
+  }
+
+  function render() {
+    const now = Date.now();
+    const { list, m } = build(now);
+    const running = list.filter(b => b.status === 'run');
+    isBusy = running.length > 0 || m.isThinking;
     $('await').style.display = 'none';
     $('live').hidden = false;
-    $('hud').innerHTML = data.svg;
-    $('log').innerHTML = data.log.length === 0
+    $('hud').innerHTML = hudSvg(list, m, now);
+    const rows = list.slice(-24).reverse();
+    $('log').innerHTML = rows.length === 0
       ? '<div class="empty">Doom awaits his first command…</div>'
-      : data.log.map(r => `<div class="row ${r.isRun ? 'run' : r.isErr ? 'err' : 'ok'}">
-          <span class="t">${esc(r.time)}</span>
-          <span style="color:${esc(r.color)}">${esc(r.glyph)}</span>
-          <span class="tool" style="color:${esc(r.color)}">${esc(r.tool)}</span>
-          <span class="target">${esc(r.target)}</span>
-          <span class="dur">${esc(r.dur)}</span></div>`).join('');
-    $('files').innerHTML = data.files.length === 0
+      : rows.map(b => {
+          const isErr = b.status === 'err' || b.status === 'deny';
+          const color = isErr ? MOLTEN : catOf(b.tool).color;
+          return `<div class="row ${b.status === 'run' ? 'run' : isErr ? 'err' : 'ok'}">
+            <span class="t">${escHtml(clock(b.t0))}</span>
+            <span style="color:${color}">${escHtml(glyph(b.status))}</span>
+            <span class="tool" style="color:${color}">${escHtml(shortTool(b.tool))}</span>
+            <span class="target">${escHtml((b.isAgent ? '↳ ' : '') + b.target)}</span>
+            <span class="dur">${b.status === 'run' ? 'live' : escHtml(dur(b, now))}</span></div>`;
+        }).join('');
+    const files = m.files.slice(-10).reverse();
+    $('files').innerHTML = files.length === 0
       ? '<div class="empty">No files seized yet.</div>'
-      : data.files.map(f => `<div class="file" style="color:${f.op === 'W' ? '#a3e635' : '#6ee7b7'}">${f.op === 'W' ? '⚒' : '◇'} ${esc(f.path)}</div>`).join('');
-  };
+      : files.map(f => `<div class="file" style="color:${f.op === 'W' ? '#a3e635' : '#6ee7b7'}">${f.op === 'W' ? '⚒' : '◇'} ${escHtml(f.path)}</div>`).join('');
+  }
 
   function showLink() {
     const el = $('link');
-    if (last === null) {
+    if (events.length === 0) {
       el.className = '';
       el.textContent = 'LINK ▪ SEARCHING';
       $('await').style.display = 'flex';
+      $('live').hidden = true;
       return;
     }
-    const age = Date.now() - last.at;
-    if (last.isBusy && age > 30000) {
-      el.className = 'lost';
-      el.textContent = `SIGNAL LOST ▪ ${ago(age)} AGO`;
-    } else if (last.isBusy) {
+    const age = Date.now() - lastAt;
+    if (isBusy) {
       el.className = 'live';
       el.textContent = 'LINK ▪ LIVE';
+    } else if (age > STALE_MS) {
+      el.className = 'lost';
+      el.textContent = `LINK ▪ QUIET ▪ LAST SIGNAL ${ago(age)} AGO`;
     } else {
       el.className = '';
       el.textContent = `LINK ▪ IDLE ▪ LAST SIGNAL ${ago(age)} AGO`;
     }
   }
 
+  function loaded() {
+    events = incoming;
+    incoming = [];
+    const last = events[events.length - 1];
+    lastAt = last ? last[last.length - 1 - (last[0] === 'pre' ? 1 : 0)] : 0;
+    // Redraw on news, and every second while Claude works so timers run.
+    if (events.length > 0 && (events.length !== shownCount || isBusy)) {
+      shownCount = events.length;
+      render();
+    }
+    showLink();
+  }
+
   function poll() {
+    incoming = [];
     const old = document.getElementById('feed');
     if (old) old.remove();
     const s = document.createElement('script');
     s.id = 'feed';
-    s.src = `feed.js?t=${Date.now()}`;
-    s.onload = s.onerror = showLink;
+    s.src = `events.js?t=${Date.now()}`;
+    s.onload = loaded;
+    s.onerror = () => { incoming = []; loaded(); };
     document.body.appendChild(s);
   }
 
